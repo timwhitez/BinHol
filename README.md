@@ -1,7 +1,7 @@
 # BinHol
 Binary Hollowing
 
-三种方式在你的pe二进制中插入恶意代码
+三种方式在你的pe二进制中插入恶意代码，如果有其他更好的方式欢迎补充
 
 Usage: program function/entrypoint/tlsinject <modify_pe_file_path> <shellcode_or_pe_path>
 
