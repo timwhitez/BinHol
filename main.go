@@ -465,15 +465,12 @@ func execute(modifyPEFilePath, textOrPEPath string) {
 		}
 		textBinPath = textOrPEPath + ".text"
 		extractTextSection(textOrPEPath, textBinPath)
-	} else if strings.HasSuffix(strings.ToLower(textOrPEPath), ".text") {
+	} else {
 		if !checkFileExist(textOrPEPath) {
 			fmt.Println("错误: .text文件不可读或不存在。")
 			return
 		}
 		textBinPath = textOrPEPath
-	} else {
-		fmt.Println("错误: 提供的文件必须是PE文件或.text文件。")
-		return
 	}
 
 	replaceTextSection(modifyPEFilePath, textBinPath, va)
