@@ -451,36 +451,6 @@ func replaceTextSection(peFilePath, textBinPath string, va uint64) {
 	fmt.Println("成功: .text节区已成功覆盖在PE文件中。")
 }
 
-func extractTextSection(pePath, outputPath string) {
-	peFile, err := pe.Open(pePath)
-	if err != nil {
-		fmt.Println("错误: PE文件加载失败。", err)
-		return
-	}
-	defer peFile.Close()
-
-	for _, section := range peFile.Sections {
-		if strings.Contains(string(section.Name), ".text") {
-			data, err := section.Data()
-			if err != nil {
-				fmt.Println("错误: 无法获取.text节区的数据。", err)
-				return
-			}
-
-			err = ioutil.WriteFile(outputPath, data, 0644)
-			if err != nil {
-				fmt.Println("错误: 无法写入输出文件。", err)
-				return
-			}
-
-			fmt.Println("成功: .text节区已提取并保存。")
-			return
-		}
-	}
-
-	fmt.Println("错误: 没有找到.text节区")
-}
-
 func checkFileExist(filePath string) bool {
 	info, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
@@ -500,31 +470,32 @@ func execute(modifyPEFilePath, textOrPEPath string) {
 		return
 	}
 
+	textData, err := ioutil.ReadFile(textOrPEPath)
+	if err != nil {
+		fmt.Println("无法读取text bin文件:", err)
+		return
+	}
+	dataLen := len(textData)
+	textData = nil
+	fmt.Printf("shellcode长度为: %d\n", dataLen)
+
 	fmt.Println("启动自动化patch")
-	va := findCrtFunction(modifyPEFilePath)
+	va := findCrtFunction(modifyPEFilePath, dataLen)
 
 	fmt.Printf("成功: 获取到可能patch func va: %x\n", va)
 
 	var textBinPath string
-	if strings.HasSuffix(strings.ToLower(textOrPEPath), ".exe") {
-		if !checkFileExist(textOrPEPath) {
-			fmt.Println("错误: PE文件不可读或不存在。")
-			return
-		}
-		textBinPath = textOrPEPath + ".text"
-		extractTextSection(textOrPEPath, textBinPath)
-	} else {
-		if !checkFileExist(textOrPEPath) {
-			fmt.Println("错误: .text文件不可读或不存在。")
-			return
-		}
-		textBinPath = textOrPEPath
+
+	if !checkFileExist(textOrPEPath) {
+		fmt.Println("错误: .text文件不可读或不存在。")
+		return
 	}
+	textBinPath = textOrPEPath
 
 	replaceTextSection(modifyPEFilePath, textBinPath, va)
 }
 
-func findCrtFunction(pePath string) uint64 {
+func findCrtFunction(pePath string, dataLen int) uint64 {
 	peFile, err := pe.Open(pePath)
 	if err != nil {
 		fmt.Println("无法读取PE文件:", err)
@@ -557,10 +528,10 @@ func findCrtFunction(pePath string) uint64 {
 			}
 		}
 	}
-	return findByCrt(pePath, crtAddr)
+	return findByCrt(pePath, crtAddr, dataLen)
 }
 
-func findByCrt(pePath string, crtAddr uint64) uint64 {
+func findByCrt(pePath string, crtAddr uint64, dataLen int) uint64 {
 	peFile, err := pe.Open(pePath)
 	if err != nil {
 		fmt.Println("无法读取PE文件:", err)
@@ -592,7 +563,7 @@ func findByCrt(pePath string, crtAddr uint64) uint64 {
 			}
 		}
 	}
-	return findByR8(pePath, crtR8Addr)
+	return findByR8(pePath, crtR8Addr, dataLen)
 }
 
 func isHex(s string) bool {
@@ -600,7 +571,7 @@ func isHex(s string) bool {
 	return matched
 }
 
-func findByR8(pePath string, crtR8Addr uint64) uint64 {
+func findByR8(pePath string, crtR8Addr uint64, dataLen int) uint64 {
 	peFile, err := pe.Open(pePath)
 	if err != nil {
 		fmt.Println("无法读取PE文件:", err)
@@ -636,10 +607,10 @@ func findByR8(pePath string, crtR8Addr uint64) uint64 {
 			}
 		}
 	}
-	return findByMain(pePath, mainAddr)
+	return findByMain(pePath, mainAddr, dataLen)
 }
 
-func findByMain(pePath string, mainAddr uint64) uint64 {
+func findByMain(pePath string, mainAddr uint64, dataLen int) uint64 {
 	peFile, err := pe.Open(pePath)
 	if err != nil {
 		fmt.Println("无法读取PE文件:", err)
@@ -666,7 +637,7 @@ func findByMain(pePath string, mainAddr uint64) uint64 {
 			opStr := fmt.Sprintf("0x%x", patchAddr)
 			if isHex(opStr) {
 				fmt.Printf("may patch: 0x%x\n", patchAddr)
-				if filterByFuncRet(pePath, patchAddr) {
+				if filterByFuncRet(pePath, patchAddr, dataLen) {
 					fmt.Printf("patch func instruction VA: 0x%x\n", patchAddr)
 					return patchAddr
 				}
@@ -676,7 +647,7 @@ func findByMain(pePath string, mainAddr uint64) uint64 {
 	return 0
 }
 
-func filterByFuncRet(pePath string, patchAddr uint64) bool {
+func filterByFuncRet(pePath string, patchAddr uint64, dataLen int) bool {
 	peFile, err := pe.Open(pePath)
 	if err != nil {
 		fmt.Println("无法读取PE文件:", err)
@@ -694,12 +665,15 @@ func filterByFuncRet(pePath string, patchAddr uint64) bool {
 		return false
 	}
 
+	if int(codeRva+codeSize) > len(code) {
+		return false
+	}
 	code = code[codeRva : codeRva+codeSize]
 
 	var patchRetnAddr uint64
 	patchAddrCount := 0
-	for i := 0; i < len(code)-1; i++ {
-		if code[i] == 0xC3 { // ret opcode
+	for i := 0; i < len(code)-2; i++ {
+		if code[i] == 0x5B && code[i+1] == 0xC3 { // ret opcode
 			patchAddrCount++
 			if patchAddrCount == 1 {
 				patchRetnAddr = codeVa + uint64(i)
@@ -709,7 +683,7 @@ func filterByFuncRet(pePath string, patchAddr uint64) bool {
 		}
 	}
 	fmt.Printf("Function size: 0x%x\n", patchRetnAddr-patchAddr)
-	return patchRetnAddr-patchAddr > 0x60
+	return patchRetnAddr-patchAddr > uint64(dataLen)
 }
 
 func getMemoryMappedImage(peFile *pe.File) ([]byte, error) {
