@@ -1,9 +1,11 @@
 # BinHol
 Binary Hollowing
 
+2024-08-02更新 加入证书表处理
+
 三种方式在你的pe二进制中插入恶意代码，如果有其他更好的方式欢迎补充
 
-Usage: program function/entrypoint/tlsinject <modify_pe_file_path> <shellcode_or_pe_path>
+Usage: program [-sign] function/entrypoint/tlsinject <modify_pe_file_path> <shellcode_or_pe_path>
 
 without using capstone/gapstone
 
@@ -12,16 +14,19 @@ without using capstone/gapstone
 
   ```
   binhol.exe function .\7za.exe .\calc.text
+  binhol.exe -sign function .\7za.exe .\calc.text
   ```
 
 - entrypoint hijack
 
   ```
   binhol.exe entrypoint .\7za.exe .\calc.text
+  binhol.exe -sign entrypoint .\7za.exe .\calc.text
   ```
 
 - tls injection
 
   ```
   binhol.exe tlsinject .\7za.exe .\calc.text
+  binhol.exe -sign tlsinject .\7za.exe .\calc.text
   ```
