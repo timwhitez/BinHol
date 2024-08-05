@@ -30,3 +30,11 @@ without using capstone/gapstone
   binhol.exe tlsinject .\7za.exe .\calc.text
   binhol.exe -sign tlsinject .\7za.exe .\calc.text
   ```
+
+
+# 说明
+function方法抄的大佬的python项目https://github.com/yj94/BinarySpy, 感谢大佬开源，忘记写来源了抱歉
+
+tls方法抄的大佬的 https://github.com/aaaddress1/sakeInject 项目
+
+entrypoint 方法来源我之前写的进程注入项目
