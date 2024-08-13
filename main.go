@@ -332,13 +332,11 @@ func tlsInject(exeData []byte, ptrStubData []byte, pathToWrite string) bool {
 		}
 		// 动态计算回调数组的长度
 		addrOfCBackSaveAt := (*[1 << 30]uint64)(unsafe.Pointer(&exeData[k])) // 假设最大长度为1<<30
-		numOfCBacks := 0
-		for i := 0; addrOfCBackSaveAt[i] != 0; i++ {
-			numOfCBacks++
+		for addrOfCBackSaveAt[0] != 0 {
+			addrOfCBackSaveAt = (*[1 << 30]uint64)(unsafe.Pointer(uintptr(unsafe.Pointer(addrOfCBackSaveAt)) + unsafe.Sizeof(addrOfCBackSaveAt[0])))
 		}
-
-		addrOfCBackSaveAt[numOfCBacks] = ntHeaders.OptionalHeader.ImageBase + uint64(sakeSection.VirtualAddress)
-		addrOfCBackSaveAt[numOfCBacks+1] = 0
+		addrOfCBackSaveAt[0] = ntHeaders.OptionalHeader.ImageBase + uint64(sakeSection.VirtualAddress) + uint64(sakeUsed)
+		addrOfCBackSaveAt[1] = 0
 	}
 
 	fileSakeSize := alignUp(sakeUsed+uint32(len(ptrStubData)), ntHeaders.OptionalHeader.FileAlignment)
