@@ -1,6 +1,8 @@
 # BinHol
 Binary Hollowing
 
+2024-09-02更新 1. 修复bug 2. function模式支持golang exe对于初始化阶段的patch
+
 2024-08-02更新 1. 加入证书表处理 2. function模式动态适配函数大小
 
 三种方式在你的pe二进制中插入恶意代码，如果有其他更好的方式欢迎补充
