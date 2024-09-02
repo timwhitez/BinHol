@@ -1,7 +1,7 @@
 # BinHol
 Binary Hollowing
 
-2024-09-02更新 1. 修复bug 2. function模式支持golang exe对于初始化阶段的patch
+2024-09-02更新 1. 修复bug 2. function模式支持golang exe对于初始化阶段的patch 3.支持对于dll导出函数的patch
 
 2024-08-02更新 1. 加入证书表处理 2. function模式动态适配函数大小
 
